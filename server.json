@@ -1,0 +1,37 @@
+{
+    "name": "UniFi Protect",
+    "docs": "https://github.com/csteenwyk/udi-unifiprotect-poly",
+    "type": "python3",
+    "executable": "unifiprotect-poly.py",
+    "install": "install.sh",
+    "description": "UniFi Protect cameras as motion/smart detection sensors for ISY. Detects people, vehicles, animals, and packages in real time.",
+    "shortPoll": "60",
+    "longPoll": "300",
+    "logLevel": "INFO",
+    "customParams": {
+        "host": "",
+        "port": "443",
+        "username": "",
+        "password": "",
+        "verify_ssl": "false"
+    },
+    "credits": [
+        {
+            "title": "UniFi Protect NodeServer",
+            "author": "csteenwyk",
+            "version": "1.0.0",
+            "date": "April 2026",
+            "source": "https://github.com/csteenwyk/udi-unifiprotect-poly",
+            "license": "https://github.com/csteenwyk/udi-unifiprotect-poly/blob/main/LICENSE"
+        }
+    ],
+    "store": {
+        "developer": "5737892+csteenwyk@users.noreply.github.com",
+        "purchaseOptions": [
+            {
+                "isPerpetual": true,
+                "price": 0
+            }
+        ]
+    }
+}

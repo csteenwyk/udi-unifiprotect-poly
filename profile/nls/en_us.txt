@@ -1,0 +1,21 @@
+# Node Server Names
+ND-unifi_controller-NAME = UniFi Protect Controller
+ND-unifi_camera-NAME = UniFi Camera
+
+# Controller Drivers
+ST-unifi_controller-ST-NAME = Status
+
+# Controller Commands
+CMD-unifi_controller-DISCOVER-NAME = Re-Discover
+CMD-unifi_controller-QUERY-NAME = Query All
+
+# Camera Drivers
+ST-unifi_camera-ST-NAME = Connected
+ST-unifi_camera-GV1-NAME = Motion
+ST-unifi_camera-GV2-NAME = Person
+ST-unifi_camera-GV3-NAME = Vehicle
+ST-unifi_camera-GV4-NAME = Animal
+ST-unifi_camera-GV5-NAME = Package
+
+# Camera Commands
+CMD-unifi_camera-QUERY-NAME = Query
