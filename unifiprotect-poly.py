@@ -78,8 +78,9 @@ class ProtectClient:
         self.port       = port
         self.username   = username
         self.password   = password
-        self._ssl       = ssl.create_default_context() if verify_ssl else False
-        self._session   = None
+        self._ssl            = ssl.create_default_context() if verify_ssl else False
+        self._session        = None
+        self._token          = None
         self._last_update_id = None
 
     def _url(self, path: str) -> str:
@@ -103,15 +104,23 @@ class ProtectClient:
             ssl=self._ssl,
         )
         resp.raise_for_status()
-        # UniFi OS 5.x returns auth token in header; store for subsequent requests
-        token = resp.headers.get('X-Auth-Token') or resp.headers.get('x-auth-token')
-        if token:
-            self._session.headers.update({'X-Auth-Token': token})
+        # UniFi OS 5.x returns auth token in X-Auth-Token header
+        self._token = (resp.headers.get('X-Auth-Token')
+                       or resp.headers.get('x-auth-token'))
+        if self._token:
             LOGGER.debug('Stored X-Auth-Token from login response')
+        else:
+            LOGGER.debug('No X-Auth-Token in response — relying on cookie jar')
+
+    def _headers(self) -> dict:
+        if self._token:
+            return {'X-Auth-Token': self._token}
+        return {}
 
     async def get_bootstrap(self) -> dict:
         resp = await self._session.get(
             self._url('/proxy/protect/api/bootstrap'),
+            headers=self._headers(),
             ssl=self._ssl,
         )
         resp.raise_for_status()
@@ -121,7 +130,7 @@ class ProtectClient:
 
     async def listen(self, on_message):
         """Open WebSocket and call on_message(action, data) for each event."""
-        async with self._session.ws_connect(self._ws_url(), ssl=self._ssl) as ws:
+        async with self._session.ws_connect(self._ws_url(), headers=self._headers(), ssl=self._ssl) as ws:
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.BINARY:
                     action, data = _parse_ws_message(msg.data)
