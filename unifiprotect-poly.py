@@ -28,7 +28,7 @@ LOGGER = udi_interface.LOGGER
 # Header: uint16 packet_type, uint8 payload_format, uint8 deflate, uint32 size
 # payload_format: 1=JSON, 2=UTF8, 3=binary
 
-_HEADER_FMT  = '>HBBI'
+_HEADER_FMT  = '>BBBBI'   # packet_type(1), payload_format(1), deflate(1), unknown(1), size(4)
 _HEADER_SIZE = struct.calcsize(_HEADER_FMT)   # 8
 
 _FMT_JSON  = 1
@@ -50,12 +50,12 @@ def _parse_ws_message(raw: bytes):
             return None, None
 
         # Action frame
-        _, a_fmt, a_deflate, a_size = struct.unpack_from(_HEADER_FMT, raw, 0)
+        _, a_fmt, a_deflate, _, a_size = struct.unpack_from(_HEADER_FMT, raw, 0)
         a_payload = _decode(raw[_HEADER_SIZE: _HEADER_SIZE + a_size], bool(a_deflate), a_fmt)
 
         # Data frame
         d_off = _HEADER_SIZE + a_size
-        _, d_fmt, d_deflate, d_size = struct.unpack_from(_HEADER_FMT, raw, d_off)
+        _, d_fmt, d_deflate, _, d_size = struct.unpack_from(_HEADER_FMT, raw, d_off)
         d_payload = _decode(raw[d_off + _HEADER_SIZE: d_off + _HEADER_SIZE + d_size],
                             bool(d_deflate), d_fmt)
 
