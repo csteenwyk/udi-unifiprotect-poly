@@ -81,6 +81,7 @@ class ProtectClient:
         self._ssl            = ssl.create_default_context() if verify_ssl else False
         self._session        = None
         self._csrf_token     = None
+        self._auth_cookie    = None
         self._last_update_id = None
 
     def _url(self, path: str) -> str:
@@ -104,16 +105,26 @@ class ProtectClient:
             ssl=self._ssl,
         )
         resp.raise_for_status()
-        # UniFi OS uses cookie auth + CSRF token; cookie jar handles TOKEN cookie
+        # Extract TOKEN cookie manually — aiohttp cookie jar may drop 'partitioned' cookies
+        set_cookie = resp.headers.get('set-cookie', '')
+        for part in set_cookie.split(';'):
+            part = part.strip()
+            if part.startswith('TOKEN='):
+                self._auth_cookie = part  # e.g. "TOKEN=eyJ..."
+                break
         self._csrf_token = (resp.headers.get('X-Csrf-Token')
                             or resp.headers.get('x-csrf-token')
                             or resp.headers.get('X-Updated-Csrf-Token'))
-        LOGGER.debug(f'CSRF token: {"stored" if self._csrf_token else "not found"}')
+        LOGGER.debug(f'Auth cookie: {"stored" if self._auth_cookie else "not found"}, '
+                     f'CSRF: {"stored" if self._csrf_token else "not found"}')
 
     def _headers(self) -> dict:
+        h = {}
+        if self._auth_cookie:
+            h['Cookie'] = self._auth_cookie
         if self._csrf_token:
-            return {'X-Csrf-Token': self._csrf_token}
-        return {}
+            h['X-Csrf-Token'] = self._csrf_token
+        return h
 
     async def get_bootstrap(self) -> dict:
         resp = await self._session.get(
