@@ -80,7 +80,7 @@ class ProtectClient:
         self.password   = password
         self._ssl            = ssl.create_default_context() if verify_ssl else False
         self._session        = None
-        self._token          = None
+        self._csrf_token     = None
         self._last_update_id = None
 
     def _url(self, path: str) -> str:
@@ -104,17 +104,15 @@ class ProtectClient:
             ssl=self._ssl,
         )
         resp.raise_for_status()
-        # UniFi OS 5.x returns auth token in X-Auth-Token header
-        self._token = (resp.headers.get('X-Auth-Token')
-                       or resp.headers.get('x-auth-token'))
-        if self._token:
-            LOGGER.debug('Stored X-Auth-Token from login response')
-        else:
-            LOGGER.debug('No X-Auth-Token in response — relying on cookie jar')
+        # UniFi OS uses cookie auth + CSRF token; cookie jar handles TOKEN cookie
+        self._csrf_token = (resp.headers.get('X-Csrf-Token')
+                            or resp.headers.get('x-csrf-token')
+                            or resp.headers.get('X-Updated-Csrf-Token'))
+        LOGGER.debug(f'CSRF token: {"stored" if self._csrf_token else "not found"}')
 
     def _headers(self) -> dict:
-        if self._token:
-            return {'X-Auth-Token': self._token}
+        if self._csrf_token:
+            return {'X-Csrf-Token': self._csrf_token}
         return {}
 
     async def get_bootstrap(self) -> dict:
