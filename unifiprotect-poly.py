@@ -103,6 +103,11 @@ class ProtectClient:
             ssl=self._ssl,
         )
         resp.raise_for_status()
+        # UniFi OS 5.x returns auth token in header; store for subsequent requests
+        token = resp.headers.get('X-Auth-Token') or resp.headers.get('x-auth-token')
+        if token:
+            self._session.headers.update({'X-Auth-Token': token})
+            LOGGER.debug('Stored X-Auth-Token from login response')
 
     async def get_bootstrap(self) -> dict:
         resp = await self._session.get(
