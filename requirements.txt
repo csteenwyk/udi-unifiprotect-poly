@@ -1,2 +1,2 @@
-udi-interface
-uiprotect
+udi_interface
+aiohttp
