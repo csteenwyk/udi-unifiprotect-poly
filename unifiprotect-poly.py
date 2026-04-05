@@ -396,6 +396,7 @@ class Controller(udi_interface.Node):
             return self._cameras[address]
 
         name = cam.get('name') or cam_id
+        LOGGER.info(f'Camera fields: { {k: cam[k] for k in ("id","name","mac","host","type","state") if k in cam} }')
         node = CameraNode(self.poly, self.address, address, name, cam_id)
         self._add_node_wait(node, timeout=3)
         node.set_connected(cam.get('state', '') == 'CONNECTED')
