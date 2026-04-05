@@ -153,6 +153,11 @@ class ProtectClient:
                     LOGGER.warning(f'WebSocket closed/error: {msg.type}')
                     break
 
+    async def reconnect(self):
+        """Close existing session and re-authenticate with a fresh one."""
+        await self.close()
+        await self.connect()
+
     async def close(self):
         if self._session:
             await self._session.close()
@@ -371,8 +376,8 @@ class Controller(udi_interface.Node):
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60)
             try:
-                # Re-login in case session expired
-                await self._client._login()
+                # Fresh session + re-login in case TOKEN expired
+                await self._client.reconnect()
                 await self._client.get_bootstrap()
                 backoff = 5
             except Exception as e:
