@@ -391,12 +391,13 @@ class Controller(udi_interface.Node):
 
     def _ensure_camera(self, cam: dict):
         cam_id  = cam.get('id', '')
-        address = cam_id[:14].lower().replace('-', '')
+        mac     = cam.get('mac', '')
+        # Use MAC address as node address — stable across re-adoption
+        address = mac.lower().replace(':', '')[:14] if mac else cam_id[:14].lower().replace('-', '')
         if address in self._cameras:
             return self._cameras[address]
 
         name = cam.get('name') or cam_id
-        LOGGER.info(f'Camera fields: { {k: cam[k] for k in ("id","name","mac","host","type","state") if k in cam} }')
         node = CameraNode(self.poly, self.address, address, name, cam_id)
         self._add_node_wait(node, timeout=3)
         node.set_connected(cam.get('state', '') == 'CONNECTED')
