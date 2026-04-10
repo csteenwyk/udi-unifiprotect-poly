@@ -476,16 +476,10 @@ class Controller(udi_interface.Node):
             bootstrap = await self._client.get_bootstrap()
         except aiohttp.ClientResponseError as e:
             if e.status == 401:
-                LOGGER.info('Resync got 401 — re-authenticating')
-                try:
-                    await self._client.reconnect()
-                    bootstrap = await self._client.get_bootstrap()
-                except Exception as e2:
-                    LOGGER.warning(f'Resync re-auth failed: {e2}')
-                    return
+                LOGGER.debug('Resync skipped — session expired (WS still active)')
             else:
                 LOGGER.warning(f'Resync failed: {e}')
-                return
+            return
         except Exception as e:
             LOGGER.warning(f'Resync failed: {e}')
             return
