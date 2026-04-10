@@ -474,15 +474,28 @@ class Controller(udi_interface.Node):
     async def _resync(self):
         try:
             bootstrap = await self._client.get_bootstrap()
-            cameras   = bootstrap.get('cameras') or []
-            if isinstance(cameras, dict):
-                cameras = cameras.values()
-            for cam in cameras:
-                node = self._node_for_camera(cam.get('id', ''))
-                if node:
-                    node.set_connected(cam.get('state', '') == 'CONNECTED')
+        except aiohttp.ClientResponseError as e:
+            if e.status == 401:
+                LOGGER.info('Resync got 401 — re-authenticating')
+                try:
+                    await self._client.reconnect()
+                    bootstrap = await self._client.get_bootstrap()
+                except Exception as e2:
+                    LOGGER.warning(f'Resync re-auth failed: {e2}')
+                    return
+            else:
+                LOGGER.warning(f'Resync failed: {e}')
+                return
         except Exception as e:
             LOGGER.warning(f'Resync failed: {e}')
+            return
+        cameras = bootstrap.get('cameras') or []
+        if isinstance(cameras, dict):
+            cameras = cameras.values()
+        for cam in cameras:
+            node = self._node_for_camera(cam.get('id', ''))
+            if node:
+                node.set_connected(cam.get('state', '') == 'CONNECTED')
 
     # ------------------------------------------------------------------
     # Commands
