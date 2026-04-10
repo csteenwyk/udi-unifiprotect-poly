@@ -153,6 +153,11 @@ class ProtectClient:
                     LOGGER.warning(f'WebSocket closed/error: {msg.type}')
                     break
 
+    async def refresh_token(self):
+        """Re-login on existing session to get a fresh TOKEN without touching the WebSocket."""
+        await self._login()
+        LOGGER.info('Auth token refreshed')
+
     async def reconnect(self):
         """Close existing session and re-authenticate with a fresh one."""
         await self.close()
@@ -476,10 +481,15 @@ class Controller(udi_interface.Node):
             bootstrap = await self._client.get_bootstrap()
         except aiohttp.ClientResponseError as e:
             if e.status == 401:
-                LOGGER.debug('Resync skipped — session expired (WS still active)')
+                try:
+                    await self._client.refresh_token()
+                    bootstrap = await self._client.get_bootstrap()
+                except Exception as e2:
+                    LOGGER.warning(f'Resync failed after token refresh: {e2}')
+                    return
             else:
                 LOGGER.warning(f'Resync failed: {e}')
-            return
+                return
         except Exception as e:
             LOGGER.warning(f'Resync failed: {e}')
             return
