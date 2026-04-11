@@ -397,6 +397,7 @@ class Controller(udi_interface.Node):
         if isinstance(cameras, dict):
             cameras = cameras.values()
         for cam in cameras:
+            LOGGER.debug(f'Camera data [{cam.get("name")}]: {cam}')
             self._ensure_camera(cam)
 
     def _ensure_camera(self, cam: dict):
