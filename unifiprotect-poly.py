@@ -11,6 +11,7 @@ Uses aiohttp directly — no uiprotect dependency — for FreeBSD compatibility.
 import asyncio
 import json
 import logging
+import os
 import ssl
 import struct
 import threading
@@ -20,6 +21,80 @@ import aiohttp
 import udi_interface
 
 LOGGER = udi_interface.LOGGER
+
+_PLUGIN_DIR  = os.path.dirname(os.path.abspath(__file__))
+_PROFILE_DIR = os.path.join(_PLUGIN_DIR, 'profile')
+
+# ---------------------------------------------------------------------------
+# Dynamic profile writer
+# ---------------------------------------------------------------------------
+
+def _write_profile(ringtones: list):
+    """Write NLS and editors with dynamic ringtone list, then return subset string."""
+    names = [r.get('name', f'Ringtone {i}') for i, r in enumerate(ringtones)]
+
+    # NLS
+    nls = _STATIC_NLS
+    nls += '\n# Dynamic — Ringtones\n'
+    for i, name in enumerate(names):
+        nls += f'RINGTONE-{i} = {name}\n'
+    if not names:
+        nls += 'RINGTONE-0 = (none)\n'
+    with open(os.path.join(_PROFILE_DIR, 'nls', 'en_us.txt'), 'w') as f:
+        f.write(nls)
+
+    # Editors
+    subset = ','.join(str(i) for i in range(len(names))) if names else '0'
+    editors = f"""<editors>
+  <editor id="E_STATUS">
+    <range uom="2" subset="0,1"/>
+  </editor>
+  <editor id="E_VOL">
+    <range uom="51" min="0" max="100" prec="0"/>
+  </editor>
+  <editor id="E_REPEAT">
+    <range uom="56" min="1" max="5" step="1"/>
+  </editor>
+  <editor id="E_RINGTONE">
+    <range uom="25" subset="{subset}" nls="RINGTONE"/>
+  </editor>
+</editors>
+"""
+    with open(os.path.join(_PROFILE_DIR, 'editor', 'editors.xml'), 'w') as f:
+        f.write(editors)
+
+    LOGGER.info(f'Profile updated: {len(names)} ringtone(s)')
+
+
+_STATIC_NLS = """\
+# Node Server Names
+ND-unifi_controller-NAME = UniFi Protect Controller
+ND-unifi_camera-NAME = UniFi Camera
+
+# Controller Drivers
+ST-unifi_controller-ST-NAME = Status
+
+# Controller Commands
+CMD-unifi_controller-DISCOVER-NAME = Re-Discover
+CMD-unifi_controller-QUERY-NAME = Query All
+
+# Camera Drivers
+ST-unifi_camera-ST-NAME = Connected
+ST-unifi_camera-GV1-NAME = Motion
+ST-unifi_camera-GV2-NAME = Person
+ST-unifi_camera-GV3-NAME = Vehicle
+ST-unifi_camera-GV4-NAME = Animal
+ST-unifi_camera-GV5-NAME = Package
+ST-unifi_camera-GV6-NAME = Ring Volume
+ST-unifi_camera-GV7-NAME = Repeat Times
+
+# Camera Commands
+CMD-unifi_camera-QUERY-NAME = Query
+CMD-unifi_camera-SET_RINGTONE-NAME = Set Ringtone
+CMD-unifi_camera-SET_RING_VOL-NAME = Set Ring Volume
+CMD-unifi_camera-SET_REPEAT-NAME = Set Repeat Times
+
+"""
 
 # ---------------------------------------------------------------------------
 # UniFi Protect binary WebSocket protocol parser
@@ -153,6 +228,19 @@ class ProtectClient:
                     LOGGER.warning(f'WebSocket closed/error: {msg.type}')
                     break
 
+    async def get_ringtones(self) -> list:
+        resp = await self._session.get(
+            self._url('/proxy/protect/api/ringtones'),
+            headers=self._headers(), ssl=self._ssl)
+        resp.raise_for_status()
+        return await resp.json()
+
+    async def patch_camera(self, camera_id: str, payload: dict):
+        resp = await self._session.patch(
+            self._url(f'/proxy/protect/api/cameras/{camera_id}'),
+            headers=self._headers(), ssl=self._ssl, json=payload)
+        resp.raise_for_status()
+
     async def refresh_token(self):
         """Re-login on existing session to get a fresh TOKEN without touching the WebSocket."""
         await self._login()
@@ -207,17 +295,20 @@ class CameraNode(udi_interface.Node):
     id = 'unifi_camera'
 
     drivers = [
-        {'driver': 'ST',  'value': 0, 'uom': 2},  # connected
-        {'driver': 'GV1', 'value': 0, 'uom': 2},  # motion
-        {'driver': 'GV2', 'value': 0, 'uom': 2},  # person
-        {'driver': 'GV3', 'value': 0, 'uom': 2},  # vehicle
-        {'driver': 'GV4', 'value': 0, 'uom': 2},  # animal
-        {'driver': 'GV5', 'value': 0, 'uom': 2},  # package
+        {'driver': 'ST',  'value': 0, 'uom': 2},   # connected
+        {'driver': 'GV1', 'value': 0, 'uom': 2},   # motion
+        {'driver': 'GV2', 'value': 0, 'uom': 2},   # person
+        {'driver': 'GV3', 'value': 0, 'uom': 2},   # vehicle
+        {'driver': 'GV4', 'value': 0, 'uom': 2},   # animal
+        {'driver': 'GV5', 'value': 0, 'uom': 2},   # package
+        {'driver': 'GV6', 'value': 0, 'uom': 51},  # ring volume
+        {'driver': 'GV7', 'value': 1, 'uom': 56},  # repeat times
     ]
 
-    def __init__(self, polyglot, primary, address, name, camera_id):
+    def __init__(self, polyglot, primary, address, name, camera_id, controller):
         super().__init__(polyglot, primary, address, name)
-        self.camera_id = camera_id
+        self.camera_id  = camera_id
+        self._ctrl      = controller
 
     def _set(self, driver, value):
         self.setDriver(driver, 1 if value else 0, report=True, force=False)
@@ -239,10 +330,46 @@ class CameraNode(udi_interface.Node):
         if driver:
             self._set(driver, active)
 
+    def set_speaker(self, speaker: dict):
+        self.setDriver('GV6', speaker.get('ringVolume', 0))
+        self.setDriver('GV7', speaker.get('repeatTimes', 1))
+
+    def _patch(self, payload: dict):
+        if self._ctrl and self._ctrl._client:
+            self._ctrl._async.submit(
+                self._ctrl._client.patch_camera(self.camera_id, payload))
+
+    def cmd_set_ringtone(self, command):
+        idx = int(command.get('value', 0))
+        ringtones = self._ctrl.ringtones
+        if idx < len(ringtones):
+            ringtone_id = ringtones[idx]['id']
+            self._patch({'speakerSettings': {'ringtoneId': ringtone_id}})
+            LOGGER.info(f'{self.name}: set ringtone → {ringtones[idx]["name"]}')
+        else:
+            LOGGER.warning(f'{self.name}: ringtone index {idx} out of range')
+
+    def cmd_set_ring_vol(self, command):
+        vol = int(command.get('value', 0))
+        self._patch({'speakerSettings': {'ringVolume': vol}})
+        self.setDriver('GV6', vol)
+        LOGGER.info(f'{self.name}: set ring volume → {vol}')
+
+    def cmd_set_repeat(self, command):
+        times = int(command.get('value', 1))
+        self._patch({'speakerSettings': {'repeatTimes': times}})
+        self.setDriver('GV7', times)
+        LOGGER.info(f'{self.name}: set repeat times → {times}')
+
     def query(self, command=None):
         self.reportDrivers()
 
-    commands = {'QUERY': query}
+    commands = {
+        'QUERY':         query,
+        'SET_RINGTONE':  cmd_set_ringtone,
+        'SET_RING_VOL':  cmd_set_ring_vol,
+        'SET_REPEAT':    cmd_set_repeat,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +389,7 @@ class Controller(udi_interface.Node):
         self._async            = _AsyncBridge()
         self._client           = None
         self._cameras          = {}     # address -> CameraNode
+        self.ringtones         = []     # list of {id, name} dicts
         self._initialized      = False
         self._controller_added = False
         self._node_added       = threading.Event()
@@ -352,7 +480,17 @@ class Controller(udi_interface.Node):
             await self._client.connect()
 
             bootstrap = await self._client.get_bootstrap()
-            LOGGER.info('Bootstrap received — discovering cameras')
+            LOGGER.info('Bootstrap received — fetching ringtones')
+            try:
+                self.ringtones = await self._client.get_ringtones()
+                LOGGER.info(f'Ringtones: {[r["name"] for r in self.ringtones]}')
+            except Exception as e:
+                LOGGER.warning(f'Could not fetch ringtones: {e}')
+                self.ringtones = []
+            _write_profile(self.ringtones)
+            self.poly.updateProfile()
+            await asyncio.sleep(2)
+            LOGGER.info('Discovering cameras')
             self._discover_cameras(bootstrap)
 
             LOGGER.info('Listening for WebSocket events')
@@ -397,7 +535,6 @@ class Controller(udi_interface.Node):
         if isinstance(cameras, dict):
             cameras = cameras.values()
         for cam in cameras:
-            LOGGER.debug(f'Camera data [{cam.get("name")}]: {cam}')
             self._ensure_camera(cam)
 
     def _ensure_camera(self, cam: dict):
@@ -409,9 +546,11 @@ class Controller(udi_interface.Node):
             return self._cameras[address]
 
         name = cam.get('name') or cam_id
-        node = CameraNode(self.poly, self.address, address, name, cam_id)
+        node = CameraNode(self.poly, self.address, address, name, cam_id, self)
         self._add_node_wait(node, timeout=3)
         node.set_connected(cam.get('state', '') == 'CONNECTED')
+        if cam.get('speakerSettings'):
+            node.set_speaker(cam['speakerSettings'])
         self._cameras[address] = node
         LOGGER.info(f'Added camera: {name} ({address})')
         return node
@@ -501,6 +640,8 @@ class Controller(udi_interface.Node):
             node = self._node_for_camera(cam.get('id', ''))
             if node:
                 node.set_connected(cam.get('state', '') == 'CONNECTED')
+                if cam.get('speakerSettings'):
+                    node.set_speaker(cam['speakerSettings'])
 
     # ------------------------------------------------------------------
     # Commands
@@ -528,7 +669,7 @@ class Controller(udi_interface.Node):
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
-    polyglot = udi_interface.Interface([])
+    polyglot = udi_interface.Interface([Controller, CameraNode])
     polyglot.start('1.0.0')
     Controller(polyglot, 'controller', 'controller', 'UniFi Protect')
     polyglot.runForever()

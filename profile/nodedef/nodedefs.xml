@@ -17,16 +17,27 @@
   <!-- Camera Node -->
   <nodeDef id="unifi_camera" nodeType="139" nls="unifi_camera">
     <sts>
-      <st id="ST"   editor="E_STATUS"/>  <!-- Connected -->
-      <st id="GV1"  editor="E_STATUS"/>  <!-- Motion detected -->
-      <st id="GV2"  editor="E_STATUS"/>  <!-- Person detected -->
-      <st id="GV3"  editor="E_STATUS"/>  <!-- Vehicle detected -->
-      <st id="GV4"  editor="E_STATUS"/>  <!-- Animal detected -->
-      <st id="GV5"  editor="E_STATUS"/>  <!-- Package detected -->
+      <st id="ST"   editor="E_STATUS"/>    <!-- Connected -->
+      <st id="GV1"  editor="E_STATUS"/>    <!-- Motion detected -->
+      <st id="GV2"  editor="E_STATUS"/>    <!-- Person detected -->
+      <st id="GV3"  editor="E_STATUS"/>    <!-- Vehicle detected -->
+      <st id="GV4"  editor="E_STATUS"/>    <!-- Animal detected -->
+      <st id="GV5"  editor="E_STATUS"/>    <!-- Package detected -->
+      <st id="GV6"  editor="E_VOL"/>       <!-- Ring volume -->
+      <st id="GV7"  editor="E_REPEAT"/>    <!-- Repeat times -->
     </sts>
     <cmds>
       <sends/>
       <accepts>
+        <cmd id="SET_RINGTONE">
+          <p id="" editor="E_RINGTONE"/>
+        </cmd>
+        <cmd id="SET_RING_VOL">
+          <p id="" editor="E_VOL"/>
+        </cmd>
+        <cmd id="SET_REPEAT">
+          <p id="" editor="E_REPEAT"/>
+        </cmd>
         <cmd id="QUERY"/>
       </accepts>
     </cmds>

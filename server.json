@@ -7,7 +7,7 @@
     "description": "UniFi Protect cameras as motion/smart detection sensors for ISY. Detects people, vehicles, animals, and packages in real time.",
     "shortPoll": "60",
     "longPoll": "300",
-    "logLevel": "DEBUG",
+    "logLevel": "INFO",
     "customParams": {
         "host": "",
         "port": "443",

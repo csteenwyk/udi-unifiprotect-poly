@@ -2,4 +2,13 @@
   <editor id="E_STATUS">
     <range uom="2" subset="0,1"/>
   </editor>
+  <editor id="E_VOL">
+    <range uom="51" min="0" max="100" prec="0"/>
+  </editor>
+  <editor id="E_REPEAT">
+    <range uom="56" min="1" max="5" step="1"/>
+  </editor>
+  <editor id="E_RINGTONE">
+    <range uom="25" subset="0" nls="RINGTONE"/>
+  </editor>
 </editors>

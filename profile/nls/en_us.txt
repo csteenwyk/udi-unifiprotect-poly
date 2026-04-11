@@ -16,6 +16,14 @@ ST-unifi_camera-GV2-NAME = Person
 ST-unifi_camera-GV3-NAME = Vehicle
 ST-unifi_camera-GV4-NAME = Animal
 ST-unifi_camera-GV5-NAME = Package
+ST-unifi_camera-GV6-NAME = Ring Volume
+ST-unifi_camera-GV7-NAME = Repeat Times
 
 # Camera Commands
 CMD-unifi_camera-QUERY-NAME = Query
+CMD-unifi_camera-SET_RINGTONE-NAME = Set Ringtone
+CMD-unifi_camera-SET_RING_VOL-NAME = Set Ring Volume
+CMD-unifi_camera-SET_REPEAT-NAME = Set Repeat Times
+
+# Dynamic — Ringtones
+RINGTONE-0 = (loading...)
