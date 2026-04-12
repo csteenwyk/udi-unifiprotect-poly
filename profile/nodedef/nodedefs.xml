@@ -25,6 +25,7 @@
       <st id="GV5"  editor="E_STATUS"/>    <!-- Package detected -->
       <st id="GV6"  editor="E_VOL"/>       <!-- Ring volume -->
       <st id="GV7"  editor="E_REPEAT"/>    <!-- Repeat times -->
+      <st id="GV8"  editor="E_RINGTONE"/>  <!-- Current ringtone -->
     </sts>
     <cmds>
       <sends/>

@@ -18,6 +18,7 @@ ST-unifi_camera-GV4-NAME = Animal
 ST-unifi_camera-GV5-NAME = Package
 ST-unifi_camera-GV6-NAME = Ring Volume
 ST-unifi_camera-GV7-NAME = Repeat Times
+ST-unifi_camera-GV8-NAME = Ringtone
 
 # Camera Commands
 CMD-unifi_camera-QUERY-NAME = Query

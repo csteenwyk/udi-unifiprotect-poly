@@ -235,6 +235,13 @@ class ProtectClient:
         resp.raise_for_status()
         return await resp.json()
 
+    async def get_camera(self, camera_id: str) -> dict:
+        resp = await self._session.get(
+            self._url(f'/proxy/protect/api/cameras/{camera_id}'),
+            headers=self._headers(), ssl=self._ssl)
+        resp.raise_for_status()
+        return await resp.json()
+
     async def patch_camera(self, camera_id: str, payload: dict):
         resp = await self._session.patch(
             self._url(f'/proxy/protect/api/cameras/{camera_id}'),
@@ -303,6 +310,7 @@ class CameraNode(udi_interface.Node):
         {'driver': 'GV5', 'value': 0, 'uom': 2},   # package
         {'driver': 'GV6', 'value': 0, 'uom': 51},  # ring volume
         {'driver': 'GV7', 'value': 1, 'uom': 56},  # repeat times
+        {'driver': 'GV8', 'value': 0, 'uom': 25},  # current ringtone (index)
     ]
 
     def __init__(self, polyglot, primary, address, name, camera_id, controller):
@@ -333,6 +341,10 @@ class CameraNode(udi_interface.Node):
     def set_speaker(self, speaker: dict):
         self.setDriver('GV6', speaker.get('ringVolume', 0))
         self.setDriver('GV7', speaker.get('repeatTimes', 1))
+        ringtone_id = speaker.get('ringtoneId', '')
+        ringtones = self._ctrl.ringtones if self._ctrl else []
+        idx = next((i for i, r in enumerate(ringtones) if r.get('id') == ringtone_id), 0)
+        self.setDriver('GV8', idx)
 
     def _patch(self, payload: dict):
         if self._ctrl and self._ctrl._client:
@@ -345,6 +357,7 @@ class CameraNode(udi_interface.Node):
         if idx < len(ringtones):
             ringtone_id = ringtones[idx]['id']
             self._patch({'speakerSettings': {'ringtoneId': ringtone_id}})
+            self.setDriver('GV8', idx)
             LOGGER.info(f'{self.name}: set ringtone → {ringtones[idx]["name"]}')
         else:
             LOGGER.warning(f'{self.name}: ringtone index {idx} out of range')
@@ -362,7 +375,20 @@ class CameraNode(udi_interface.Node):
         LOGGER.info(f'{self.name}: set repeat times → {times}')
 
     def query(self, command=None):
-        self.reportDrivers()
+        if self._ctrl and self._ctrl._client:
+            self._ctrl._async.submit(self._refresh())
+        else:
+            self.reportDrivers()
+
+    async def _refresh(self):
+        try:
+            cam = await self._ctrl._client.get_camera(self.camera_id)
+            if cam.get('speakerSettings'):
+                self.set_speaker(cam['speakerSettings'])
+            self.reportDrivers()
+        except Exception as e:
+            LOGGER.warning(f'{self.name}: query refresh failed: {e}')
+            self.reportDrivers()
 
     commands = {
         'QUERY':         query,
