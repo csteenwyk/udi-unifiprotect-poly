@@ -34,7 +34,7 @@
           <p id="" editor="E_RINGTONE"/>
         </cmd>
         <cmd id="SET_RING_VOL">
-          <p id="" editor="E_VOL"/>
+          <p id="" editor="E_VOL" init="GV6"/>
         </cmd>
         <cmd id="SET_REPEAT">
           <p id="" editor="E_REPEAT"/>

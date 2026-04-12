@@ -322,7 +322,7 @@ class CameraNode(udi_interface.Node):
         {'driver': 'GV3', 'value': 0, 'uom': 2},   # vehicle
         {'driver': 'GV4', 'value': 0, 'uom': 2},   # animal
         {'driver': 'GV5', 'value': 0, 'uom': 2},   # package
-        {'driver': 'GV6', 'value': 0, 'uom': 51},  # ring volume
+        {'driver': 'GV6', 'value': 50, 'uom': 51},  # ring volume
         {'driver': 'GV7', 'value': 1, 'uom': 56},  # repeat times
         {'driver': 'GV8', 'value': 0, 'uom': 25},  # current ringtone (index)
     ]
