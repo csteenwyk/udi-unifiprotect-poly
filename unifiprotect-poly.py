@@ -180,12 +180,16 @@ class ProtectClient:
             ssl=self._ssl,
         )
         resp.raise_for_status()
-        # Extract TOKEN cookie manually — aiohttp cookie jar may drop 'partitioned' cookies
-        set_cookie = resp.headers.get('set-cookie', '')
-        for part in set_cookie.split(';'):
-            part = part.strip()
-            if part.startswith('TOKEN='):
-                self._auth_cookie = part  # e.g. "TOKEN=eyJ..."
+        # Extract TOKEN cookie manually — aiohttp cookie jar may drop 'partitioned' cookies.
+        # Use getall() because Set-Cookie appears as multiple headers; get() only returns first.
+        self._auth_cookie = None
+        for header_val in resp.headers.getall('set-cookie', []):
+            for part in header_val.split(';'):
+                part = part.strip()
+                if part.startswith('TOKEN='):
+                    self._auth_cookie = part  # e.g. "TOKEN=eyJ..."
+                    break
+            if self._auth_cookie:
                 break
         self._csrf_token = (resp.headers.get('X-Csrf-Token')
                             or resp.headers.get('x-csrf-token')
@@ -246,6 +250,12 @@ class ProtectClient:
         resp = await self._session.patch(
             self._url(f'/proxy/protect/api/cameras/{camera_id}'),
             headers=self._headers(), ssl=self._ssl, json=payload)
+        if resp.status == 401:
+            LOGGER.warning('patch_camera: 401 — refreshing token and retrying')
+            await self._login()
+            resp = await self._session.patch(
+                self._url(f'/proxy/protect/api/cameras/{camera_id}'),
+                headers=self._headers(), ssl=self._ssl, json=payload)
         resp.raise_for_status()
 
     async def refresh_token(self):
@@ -287,7 +297,11 @@ class _AsyncBridge:
             return None
 
     def submit(self, coro):
-        asyncio.run_coroutine_threadsafe(coro, self._loop)
+        def _log_exception(fut):
+            if not fut.cancelled() and fut.exception():
+                LOGGER.error(f'Async task error: {fut.exception()}')
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        future.add_done_callback(_log_exception)
 
     def shutdown(self):
         self._loop.call_soon_threadsafe(self._loop.stop)
