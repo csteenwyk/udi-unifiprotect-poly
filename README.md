@@ -7,6 +7,8 @@ Integrates UniFi Protect cameras with the ISY/iOX home automation controller via
 - Real-time motion and smart detection via WebSocket (no polling delay)
 - Per-camera drivers: Motion, Person, Vehicle, Animal, Package
 - Camera connection state monitoring
+- Doorbell ringtone, ring volume, and repeat times control
+- Ringtone names fetched dynamically from Protect and shown by name in ISY dropdowns
 - Local API only — no Ubiquiti cloud required
 
 ## Requirements
@@ -48,8 +50,22 @@ In the UniFi console, go to **Settings → Admins & Users → Add Admin** and cr
 | Vehicle | Vehicle detected |
 | Animal | Animal detected |
 | Package | Package detected |
+| Ring Volume | Doorbell ring volume (0–100%) |
+| Repeat Times | Number of times the ringtone plays (1–5) |
+| Ringtone | Current ringtone (shown by name) |
 
 Detection drivers stay true for as long as the event is active. They clear automatically when Protect closes the event.
+
+Ring Volume, Repeat Times, and Ringtone are only relevant for cameras with speakers (doorbells). They are updated on startup and when queried.
+
+## Camera Node Commands
+
+| Command | Description |
+|---------|-------------|
+| Set Ringtone | Choose a ringtone by name from the dropdown |
+| Set Ring Volume | Set the doorbell ring volume (0–100%) |
+| Set Repeat Times | How many times the ringtone plays per ring (1–5) |
+| Query | Refresh all drivers from the Protect API |
 
 ## License
 
