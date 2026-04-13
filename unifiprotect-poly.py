@@ -169,8 +169,10 @@ class ProtectClient:
         return base
 
     async def connect(self):
-        jar = aiohttp.CookieJar(unsafe=True)
-        self._session = aiohttp.ClientSession(cookie_jar=jar)
+        # DummyCookieJar ignores all Set-Cookie headers — we handle TOKEN manually
+        # in _headers(). This prevents the cookie jar from sending stale cookies
+        # that conflict with our manually-extracted TOKEN on re-login.
+        self._session = aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar())
         await self._login()
 
     async def _login(self):
@@ -194,8 +196,8 @@ class ProtectClient:
         self._csrf_token = (resp.headers.get('X-Csrf-Token')
                             or resp.headers.get('x-csrf-token')
                             or resp.headers.get('X-Updated-Csrf-Token'))
-        LOGGER.debug(f'Auth cookie: {"stored" if self._auth_cookie else "not found"}, '
-                     f'CSRF: {"stored" if self._csrf_token else "not found"}')
+        LOGGER.info(f'Login: TOKEN={"found" if self._auth_cookie else "NOT FOUND"}, '
+                    f'CSRF={"found" if self._csrf_token else "not found"}')
 
     def _headers(self) -> dict:
         h = {}
@@ -251,8 +253,8 @@ class ProtectClient:
             self._url(f'/proxy/protect/api/cameras/{camera_id}'),
             headers=self._headers(), ssl=self._ssl, json=payload)
         if resp.status == 401:
-            LOGGER.warning('patch_camera: 401 — refreshing token and retrying')
-            await self._login()
+            LOGGER.warning('patch_camera: 401 — reconnecting and retrying')
+            await self.reconnect()
             resp = await self._session.patch(
                 self._url(f'/proxy/protect/api/cameras/{camera_id}'),
                 headers=self._headers(), ssl=self._ssl, json=payload)
@@ -662,10 +664,11 @@ class Controller(udi_interface.Node):
         except aiohttp.ClientResponseError as e:
             if e.status == 401:
                 try:
-                    await self._client.refresh_token()
+                    LOGGER.info('Resync 401 — creating fresh session')
+                    await self._client.reconnect()
                     bootstrap = await self._client.get_bootstrap()
                 except Exception as e2:
-                    LOGGER.warning(f'Resync failed after token refresh: {e2}')
+                    LOGGER.warning(f'Resync failed after reconnect: {e2}')
                     return
             else:
                 LOGGER.warning(f'Resync failed: {e}')
