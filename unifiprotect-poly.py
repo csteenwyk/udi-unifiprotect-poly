@@ -619,10 +619,10 @@ class Controller(udi_interface.Node):
                 if node and 'state' in data:
                     node.set_connected(data['state'] == 'CONNECTED')
                 elif not node and act == 'add':
-                    # Newly adopted camera
-                    cam_data = dict(data)
-                    cam_data.setdefault('id', cam_id)
-                    self._ensure_camera(cam_data)
+                    # Newly adopted camera — trigger resync to get full data
+                    # (WebSocket add events lack the name field)
+                    LOGGER.info(f'New camera detected ({cam_id}) — resyncing')
+                    self._async.submit(self._resync())
 
             elif model_key == 'event':
                 self._handle_event(action, data)
