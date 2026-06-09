@@ -35,6 +35,7 @@ Set the following in Custom Parameters:
 | `username` | Local UniFi OS account username | |
 | `password` | Local UniFi OS account password | |
 | `verify_ssl` | Verify SSL certificate | `false` |
+| `detection_timeout` | Seconds before a stuck detection driver auto-clears if its close event is missed; `0` disables | `300` |
 
 ### Creating a local account
 
@@ -54,7 +55,7 @@ In the UniFi console, go to **Settings → Admins & Users → Add Admin** and cr
 | Repeat Times | Number of times the ringtone plays (1–5) |
 | Ringtone | Current ringtone (shown by name) |
 
-Detection drivers stay true for as long as the event is active. They clear automatically when Protect closes the event.
+Detection drivers stay true for as long as the event is active. They clear automatically when Protect closes the event. As a safety net, each detection driver also auto-clears after `detection_timeout` seconds if the closing event is missed (e.g. a WebSocket reconnect), and all detection drivers are reset to off on startup so a stale detection never persists across a restart.
 
 Ring Volume, Repeat Times, and Ringtone are only relevant for cameras with speakers (doorbells). They are updated on startup and when queried.
 

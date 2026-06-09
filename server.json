@@ -13,14 +13,15 @@
         "port": "443",
         "username": "",
         "password": "",
-        "verify_ssl": "false"
+        "verify_ssl": "false",
+        "detection_timeout": "300"
     },
     "credits": [
         {
             "title": "UniFi Protect NodeServer",
             "author": "csteenwyk",
-            "version": "1.0.0",
-            "date": "April 2026",
+            "version": "1.0.1",
+            "date": "June 2026",
             "source": "https://github.com/csteenwyk/udi-unifiprotect-poly",
             "license": "https://github.com/csteenwyk/udi-unifiprotect-poly/blob/main/LICENSE"
         }

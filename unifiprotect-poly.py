@@ -5,6 +5,10 @@ Each camera becomes a node with binary driver states for real-time smart
 detection (motion, person, vehicle, animal, package). Drivers stay True
 while the event is open; cleared when Protect closes it.
 
+Detection drivers are ephemeral: they are reset to 0 on startup, and a
+configurable per-driver timeout (``detection_timeout``) auto-clears any
+driver left stuck on by a missed WebSocket close event.
+
 Uses aiohttp directly — no uiprotect dependency — for FreeBSD compatibility.
 """
 
@@ -330,10 +334,15 @@ class CameraNode(udi_interface.Node):
         {'driver': 'GV8', 'value': 0, 'uom': 25},  # current ringtone (index)
     ]
 
+    # Ephemeral detection drivers — reset on startup, auto-cleared on timeout
+    DETECTION_DRIVERS = ('GV1', 'GV2', 'GV3', 'GV4', 'GV5')
+
     def __init__(self, polyglot, primary, address, name, camera_id, controller):
         super().__init__(polyglot, primary, address, name)
-        self.camera_id  = camera_id
-        self._ctrl      = controller
+        self.camera_id   = camera_id
+        self._ctrl       = controller
+        self._timers     = {}                 # driver -> threading.Timer (auto-clear)
+        self._timer_lock = threading.Lock()
 
     def _set(self, driver, value):
         self.setDriver(driver, 1 if value else 0, report=True, force=False)
@@ -342,7 +351,7 @@ class CameraNode(udi_interface.Node):
         self._set('ST', connected)
 
     def set_motion(self, active: bool):
-        self._set('GV1', active)
+        self._set_detection('GV1', active)
 
     def set_smart(self, obj_type: str, active: bool):
         mapping = {
@@ -353,7 +362,47 @@ class CameraNode(udi_interface.Node):
         }
         driver = mapping.get(obj_type)
         if driver:
-            self._set(driver, active)
+            self._set_detection(driver, active)
+
+    def _set_detection(self, driver, active: bool):
+        """Set a detection driver and (re)arm its auto-clear timeout.
+
+        Protect signals a detection 'open' then later 'closed'. If the closing
+        WebSocket message is missed (reconnect, dropped frame), the driver would
+        otherwise stay stuck on. We (re)arm a configurable timer on every 'open'
+        so a missed close self-heals after ``detection_timeout`` seconds."""
+        self._set(driver, active)
+        timeout = self._ctrl.detection_timeout if self._ctrl else 0
+        with self._timer_lock:
+            existing = self._timers.pop(driver, None)
+            if existing:
+                existing.cancel()
+            if active and timeout > 0:
+                timer = threading.Timer(timeout, self._timeout_clear, args=(driver,))
+                timer.daemon = True
+                self._timers[driver] = timer
+                timer.start()
+
+    def _timeout_clear(self, driver):
+        with self._timer_lock:
+            self._timers.pop(driver, None)
+        LOGGER.warning(
+            f'{self.name}: {driver} auto-cleared after '
+            f'{self._ctrl.detection_timeout}s (no close event received)')
+        self._set(driver, False)
+
+    def clear_detections(self):
+        """Force all detection drivers to 0 and cancel pending timers.
+
+        Detections are ephemeral and must not survive a restart — PG3x persists
+        driver values, so a stuck driver would otherwise ride through a plugin
+        restart. Called on startup for each camera."""
+        with self._timer_lock:
+            for timer in self._timers.values():
+                timer.cancel()
+            self._timers.clear()
+        for driver in self.DETECTION_DRIVERS:
+            self.setDriver(driver, 0, report=True, force=True)
 
     def set_speaker(self, speaker: dict):
         self.setDriver('GV6', speaker.get('ringVolume', 0))
@@ -433,6 +482,7 @@ class Controller(udi_interface.Node):
         self._client           = None
         self._cameras          = {}     # address -> CameraNode
         self.ringtones         = []     # list of {id, name} dicts
+        self.detection_timeout = 300    # seconds; auto-clear stuck detection drivers (0 = off)
         self._initialized      = False
         self._controller_added = False
         self._node_added       = threading.Event()
@@ -489,6 +539,11 @@ class Controller(udi_interface.Node):
     def param_handler(self, params):
         self._params.load(params)
         self.poly.Notices.clear()
+
+        try:
+            self.detection_timeout = max(0, int((params.get('detection_timeout') or '300').strip()))
+        except (ValueError, TypeError):
+            self.detection_timeout = 300
 
         host     = params.get('host',     '').strip()
         username = params.get('username', '').strip()
@@ -591,6 +646,7 @@ class Controller(udi_interface.Node):
         name = cam.get('name') or cam_id
         node = CameraNode(self.poly, self.address, address, name, cam_id, self)
         self._add_node_wait(node, timeout=3)
+        node.clear_detections()   # ephemeral state must not persist across restart
         node.set_connected(cam.get('state', '') == 'CONNECTED')
         if cam.get('speakerSettings'):
             node.set_speaker(cam['speakerSettings'])
@@ -714,6 +770,6 @@ class Controller(udi_interface.Node):
 
 if __name__ == '__main__':
     polyglot = udi_interface.Interface([Controller, CameraNode])
-    polyglot.start('1.0.0')
+    polyglot.start('1.0.1')
     Controller(polyglot, 'controller', 'controller', 'UniFi Protect')
     polyglot.runForever()
