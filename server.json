@@ -14,7 +14,8 @@
         "username": "",
         "password": "",
         "verify_ssl": "false",
-        "detection_timeout": "300"
+        "detection_timeout": "300",
+        "watchdog_minutes": "5"
     },
     "credits": [
         {

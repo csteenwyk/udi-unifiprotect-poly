@@ -19,6 +19,7 @@ import os
 import ssl
 import struct
 import threading
+import time
 import zlib
 
 import aiohttp
@@ -28,6 +29,13 @@ LOGGER = udi_interface.LOGGER
 
 _PLUGIN_DIR  = os.path.dirname(os.path.abspath(__file__))
 _PROFILE_DIR = os.path.join(_PLUGIN_DIR, 'profile')
+
+# Self-healing: minutes of sustained connection failure before the plugin
+# restarts itself, and how long before it may do so again (so a genuinely-down
+# controller doesn't cause a reboot loop). Notices stay quiet for brief blips.
+_WATCHDOG_DEFAULT_MIN = 5
+_RESTART_COOLDOWN_SEC = 1800
+_NOTICE_AFTER_SEC     = 60
 
 # ---------------------------------------------------------------------------
 # Dynamic profile writer
@@ -177,7 +185,15 @@ class ProtectClient:
         # DummyCookieJar ignores all Set-Cookie headers — we handle TOKEN manually
         # in _headers(). This prevents the cookie jar from sending stale cookies
         # that conflict with our manually-extracted TOKEN on re-login.
-        self._session = aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar())
+        # Bound connection ESTABLISHMENT only. A blackholed route (no ICMP
+        # unreachable — what a lost route actually looks like) hangs the TCP
+        # connect, which is the case we care about.
+        # Deliberately no `total`: this session is also used for ws_connect,
+        # and a total timeout applies to the whole upgraded connection, which
+        # would tear down a healthy WebSocket on a timer.
+        self._session = aiohttp.ClientSession(
+            cookie_jar=aiohttp.DummyCookieJar(),
+            timeout=aiohttp.ClientTimeout(total=None, connect=10, sock_connect=10))
         await self._login()
 
     async def _login(self):
@@ -223,9 +239,13 @@ class ProtectClient:
         self._last_update_id = data.get('lastUpdateId')
         return data
 
-    async def listen(self, on_message):
+    async def listen(self, on_message, on_connect=None):
         """Open WebSocket and call on_message(action, data) for each event."""
         async with self._session.ws_connect(self._ws_url(), headers=self._headers(), ssl=self._ssl) as ws:
+            # Only trustworthy "we are online" signal — fires once the socket
+            # is genuinely established, not merely attempted.
+            if on_connect:
+                on_connect()
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.BINARY:
                     action, data = _parse_ws_message(msg.data)
@@ -485,12 +505,20 @@ class Controller(udi_interface.Node):
         self.detection_timeout = 300    # seconds; auto-clear stuck detection drivers (0 = off)
         self._initialized      = False
         self._controller_added = False
-        self._node_added       = threading.Event()
+        self._node_events      = {}     # node address -> threading.Event
+        self._node_events_lock = threading.Lock()
         self._params           = udi_interface.Custom(polyglot, 'customparams')
+        self._data             = udi_interface.Custom(polyglot, 'customdata')
+        self._down_since       = None   # epoch of first failure in current outage
+        self._watchdog_minutes = _WATCHDOG_DEFAULT_MIN
+        self._running          = True
+        self._connect_lock     = threading.Lock()
+        self._profile_written  = False
 
         polyglot.subscribe(polyglot.CONFIGDONE,   self._on_config_done)
         polyglot.subscribe(polyglot.START,        self.start)
         polyglot.subscribe(polyglot.CUSTOMPARAMS, self.param_handler)
+        polyglot.subscribe(polyglot.CUSTOMDATA,   self._customdata_handler)
         polyglot.subscribe(polyglot.POLL,         self.poll)
         polyglot.subscribe(polyglot.STOP,         self.stop)
         polyglot.subscribe(polyglot.ADDNODEDONE,  self._on_node_added)
@@ -505,8 +533,14 @@ class Controller(udi_interface.Node):
     def start(self):
         LOGGER.debug('start() called')
 
+    def _customdata_handler(self, data):
+        """Custom() does not self-load — without this the watchdog's restart
+        cooldown would read None every start and could reboot-loop."""
+        self._data.load(data or {})
+
     def stop(self):
         LOGGER.info('Stopping UniFi Protect nodeserver')
+        self._running = False
         if self._client:
             self._async.run(self._client.close(), timeout=10)
         self._async.shutdown()
@@ -518,36 +552,63 @@ class Controller(udi_interface.Node):
         try:
             self._add_node_wait(self, timeout=3)
             self._controller_added = True
-            self.setDriver('ST', 1)
+            # ST reflects the Protect connection, not node creation. Claiming 1
+            # here made the controller look healthy through an entire outage.
+            self.setDriver('ST', 0)
             if not self._initialized:
                 self._try_connect()
         except Exception as e:
             LOGGER.error(f'Failed to add controller node: {e}', exc_info=True)
 
     def _on_node_added(self, data):
-        self._node_added.set()
+        addr = (data or {}).get('address')
+        with self._node_events_lock:
+            ev = self._node_events.get(addr)
+            # Older payloads may omit the address; wake everyone rather than
+            # hanging every waiter until timeout.
+            waiters = [ev] if ev else list(self._node_events.values())
+        for e in waiters:
+            e.set()
 
     def _add_node_wait(self, node, timeout=15):
-        self._node_added.clear()
-        self.poly.addNode(node)
-        self._node_added.wait(timeout=timeout)
+        # One Event per address: a single shared Event let concurrent callers
+        # consume each other's completion and return before their node existed.
+        ev = threading.Event()
+        with self._node_events_lock:
+            self._node_events[node.address] = ev
+        try:
+            self.poly.addNode(node)
+            if not ev.wait(timeout=timeout):
+                LOGGER.warning(f'Timed out waiting for ISY to add {node.address}')
+        finally:
+            with self._node_events_lock:
+                self._node_events.pop(node.address, None)
 
     # ------------------------------------------------------------------
     # Params / connection
     # ------------------------------------------------------------------
 
     def param_handler(self, params):
+        # PG3 always publishes CUSTOMPARAMS at startup, but with a None payload
+        # when it has nothing stored. Loading that would wipe _rawdata, and
+        # params.get() would raise inside a bare handler thread — silently
+        # leaving the plugin configured-but-never-connected.
+        if not params:
+            LOGGER.warning('CUSTOMPARAMS with no data — keeping existing params')
+            return
         self._params.load(params)
-        self.poly.Notices.clear()
+        # Targeted delete, not clear() — clear() would also wipe an active
+        # outage notice every time params are saved.
+        self.poly.Notices.delete('config')
 
         try:
             self.detection_timeout = max(0, int((params.get('detection_timeout') or '300').strip()))
         except (ValueError, TypeError):
             self.detection_timeout = 300
 
-        host     = params.get('host',     '').strip()
-        username = params.get('username', '').strip()
-        password = params.get('password', '').strip()
+        host     = (params.get('host')     or '').strip()
+        username = (params.get('username') or '').strip()
+        password = (params.get('password') or '').strip()
 
         if not host or not username or not password:
             self.poly.Notices['config'] = (
@@ -557,72 +618,165 @@ class Controller(udi_interface.Node):
         if not self._initialized:
             self._try_connect()
 
+    def _is_configured(self) -> bool:
+        p = self._params
+        if ((p.get('host') or '').strip() and (p.get('username') or '').strip()
+                and (p.get('password') or '').strip()):
+            return True
+        # _params can be empty if CUSTOMPARAMS never reached us. PG3's config is
+        # the authoritative copy, so fall back to it rather than staying dead.
+        try:
+            cfg = (self.poly.getConfig() or {}).get('customParams') or {}
+        except Exception:
+            return False
+        if ((cfg.get('host') or '').strip() and (cfg.get('username') or '').strip()
+                and (cfg.get('password') or '').strip()):
+            LOGGER.warning('Recovered params from PG3 config')
+            self._params.load(cfg)
+            return True
+        return False
+
     def _try_connect(self):
+        # CONFIGDONE, CUSTOMPARAMS and POLL each run on their own thread, so a
+        # bare check-then-set would let two supervisors start against two
+        # clients, leaking a session and orphaning a loop.
+        with self._connect_lock:
+            if self._initialized:
+                return
+            self._initialized = True
+
         params  = self._params
         host    = (params.get('host')     or '').strip()
         user    = (params.get('username') or '').strip()
         passwd  = (params.get('password') or '').strip()
         port    = int((params.get('port') or '443').strip())
         verify  = (params.get('verify_ssl') or 'false').strip().lower() == 'true'
+        try:
+            self._watchdog_minutes = int(
+                (params.get('watchdog_minutes') or _WATCHDOG_DEFAULT_MIN))
+        except (ValueError, TypeError):
+            self._watchdog_minutes = _WATCHDOG_DEFAULT_MIN
 
         if not host or not user or not passwd:
+            LOGGER.warning('host/username/password not set — not connecting')
+            self._initialized = False
             return
 
-        self._initialized = True
-        self._async.submit(self._connect(host, port, user, passwd, verify))
+        self._async.submit(self._supervisor(host, port, user, passwd, verify))
 
-    async def _connect(self, host, port, username, password, verify_ssl):
+    async def _supervisor(self, host, port, username, password, verify_ssl):
+        """Owns the whole connection lifecycle.
+
+        First connect and reconnect-after-an-outage are deliberately the same
+        code path, so a plugin that starts before the network is up simply
+        retries until the network arrives instead of sitting idle forever.
+        """
         try:
-            LOGGER.info(f'Connecting to UniFi Protect at {host}:{port}')
-            self._client = ProtectClient(host, port, username, password, verify_ssl)
-            await self._client.connect()
-
-            bootstrap = await self._client.get_bootstrap()
-            LOGGER.info('Bootstrap received — fetching ringtones')
-            try:
-                self.ringtones = await self._client.get_ringtones()
-                LOGGER.info(f'Ringtones: {[r["name"] for r in self.ringtones]}')
-            except Exception as e:
-                LOGGER.warning(f'Could not fetch ringtones: {e}')
-                self.ringtones = []
-            _write_profile(self.ringtones)
-            self.poly.updateProfile()
-            await asyncio.sleep(2)
-            LOGGER.info('Discovering cameras')
-            self._discover_cameras(bootstrap)
-
-            LOGGER.info('Listening for WebSocket events')
-            await self._ws_loop()
-
-        except Exception as e:
-            LOGGER.error(f'Connection failed: {e}', exc_info=True)
-            self.poly.Notices['error'] = f'Connection failed: {e}'
+            await self._supervise(host, port, username, password, verify_ssl)
+        finally:
+            # Every exit path — clean stop or an unexpected crash — must clear
+            # this, or the shortPoll safety net won't restart us.
+            LOGGER.info('Connection supervisor stopped')
             self._initialized = False
-            if self._client:
-                await self._client.close()
-                self._client = None
 
-    async def _ws_loop(self):
-        """Run WebSocket listener with automatic reconnection."""
+    async def _supervise(self, host, port, username, password, verify_ssl):
         backoff = 5
-        while self._initialized:
+        first = True
+        while self._running:
             try:
-                self.setDriver('ST', 1)
-                await self._client.listen(self._on_ws_message)
+                LOGGER.info(f'Connecting to UniFi Protect at {host}:{port}')
+                # A fresh client each attempt re-runs /api/auth/login, which is
+                # what refreshes the expiring TOKEN cookie.
+                self._client = ProtectClient(host, port, username, password, verify_ssl)
+                await self._client.connect()
+
+                bootstrap = await self._client.get_bootstrap()
+                LOGGER.info('Bootstrap received')
+
+                # Ringtones drive the profile, which only needs writing once.
+                if not self._profile_written:
+                    try:
+                        self.ringtones = await self._client.get_ringtones()
+                        LOGGER.info(f'Ringtones: {[r["name"] for r in self.ringtones]}')
+                    except Exception as e:
+                        LOGGER.warning(f'Could not fetch ringtones: {e}')
+                        self.ringtones = []
+                    _write_profile(self.ringtones)
+                    self.poly.updateProfile()
+                    self._profile_written = True
+
+                if first:
+                    await asyncio.sleep(2)   # let ISY digest the profile
+                    first = False
+
+                LOGGER.info('Discovering cameras')
+                await asyncio.get_event_loop().run_in_executor(
+                    None, self._discover_cameras, bootstrap)
+
+                LOGGER.info('Listening for WebSocket events')
+                backoff = 5
+                # _mark_online fires from inside, once the socket is truly up.
+                await self._client.listen(self._on_ws_message,
+                                          on_connect=self._mark_online)
+                LOGGER.warning('WebSocket closed by peer')
+                self._mark_offline('WebSocket closed')
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
-                LOGGER.warning(f'WebSocket disconnected: {e} — reconnecting in {backoff}s')
-            self.setDriver('ST', 0)
-            if not self._initialized:
+                self._mark_offline(e)
+
+            await self._teardown_client()
+            if not self._running:
                 break
+            LOGGER.info(f'Retrying in {backoff}s')
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60)
+
+    async def _teardown_client(self):
+        self.setDriver('ST', 0)
+        client, self._client = self._client, None
+        if client:
             try:
-                # Fresh session + re-login in case TOKEN expired
-                await self._client.reconnect()
-                await self._client.get_bootstrap()
-                backoff = 5
+                await client.close()
             except Exception as e:
-                LOGGER.warning(f'Reconnect failed: {e}')
+                LOGGER.debug(f'Error closing client: {e}')
+
+    def _mark_online(self):
+        """Called only when the WebSocket is genuinely established."""
+        self.setDriver('ST', 1)
+        if self._down_since is not None:
+            down_min = (time.time() - self._down_since) / 60
+            LOGGER.info(f'Connection restored after {down_min:.1f} min offline')
+            self._down_since = None
+        self.poly.Notices.delete('offline')
+
+    def _mark_offline(self, err):
+        """Track a sustained outage: surface it, then self-restart if it persists."""
+        now = time.time()
+        if self._down_since is None:
+            self._down_since = now
+        down_sec = now - self._down_since
+        LOGGER.warning(f'Connection failed (down {down_sec / 60:.1f} min): {err}')
+
+        if down_sec >= _NOTICE_AFTER_SEC:
+            self.poly.Notices['offline'] = (
+                f'No connection to UniFi Protect for {down_sec / 60:.0f} min: {err}')
+
+        if not self._watchdog_minutes or down_sec < self._watchdog_minutes * 60:
+            return
+
+        # Sustained outage. The retry loop above is the real recovery path;
+        # restart() is a blunt last resort and a no-op if MQTT never came up.
+        # Cooldown is persisted so it survives the restart it just caused.
+        last = float(self._data.get('last_restart') or 0)
+        if now - last < _RESTART_COOLDOWN_SEC:
+            return
+        self._data['last_restart'] = now
+        LOGGER.error(f'No connection for {down_sec / 60:.0f} min — restarting plugin')
+        try:
+            self.poly.restart()
+        except Exception as e:
+            LOGGER.error(f'Self-restart failed: {e}')
 
     # ------------------------------------------------------------------
     # Camera discovery
@@ -710,9 +864,16 @@ class Controller(udi_interface.Node):
     # ------------------------------------------------------------------
 
     def poll(self, flag):
-        if not self._initialized or not self._client:
+        # Safety net for the case the supervisor never started at all: a
+        # startup callback that didn't fire, a crashed handler thread, or
+        # params that arrived late. shortPoll (60s) rather than longPoll so
+        # recovery is a minute, not ten.
+        if flag == 'shortPoll':
+            if not self._initialized and self._is_configured():
+                LOGGER.warning('No connection supervisor running — starting one')
+                self._try_connect()
             return
-        if flag == 'longPoll':
+        if flag == 'longPoll' and self._initialized and self._client:
             self._async.submit(self._resync())
 
     async def _resync(self):
